@@ -1,5 +1,6 @@
 import { createLogger } from '../src/logger';
 import type { ChargeRequest, ChargeResult, PaymentGateway } from '../src/payments/payment.gateway';
+import type { ProcessorOptions } from '../src/payments/payment.processor';
 import type { Payment } from '../src/payments/payment.types';
 
 export const silentLogger = createLogger('silent');
@@ -41,3 +42,10 @@ export type MockGateway = { charge: jest.MockedFunction<PaymentGateway['charge']
 export function mockGateway(): MockGateway {
   return { charge: jest.fn<ReturnType<PaymentGateway['charge']>, Parameters<PaymentGateway['charge']>>() };
 }
+
+export const FAST_PROCESSING: ProcessorOptions = {
+  maxAttempts: 3,
+  baseBackoffMs: 100,
+  attemptTimeoutMs: 1000,
+  maxConcurrency: 10,
+};
