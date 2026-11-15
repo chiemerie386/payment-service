@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, rmdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { DuplicateIdempotencyKeyError } from '../../src/errors';
@@ -165,6 +165,55 @@ describe('FilePaymentRepository durability', () => {
 
     const onDisk = JSON.parse(await readFile(file, 'utf8')) as unknown[];
     expect(onDisk).toHaveLength(25);
+  });
+
+  describe('when the disk write fails', () => {
+    // A directory squatting on the temp file path makes every save fail,
+    // the same way a full disk or a permissions problem would.
+    const breakDisk = (file: string) => mkdir(`${file}.tmp`);
+    const repairDisk = (file: string) => rmdir(`${file}.tmp`);
+
+    it('rejects the insert and does not keep the payment in memory either', async () => {
+      const file = path.join(directory, 'payments.json');
+      const repository = await FilePaymentRepository.open(file);
+      const payment = buildPayment({ idempotencyKey: 'key-1' });
+      await breakDisk(file);
+
+      await expect(repository.insert(payment)).rejects.toThrow();
+
+      expect(await repository.findById(payment.id)).toBeNull();
+      expect(await repository.findByIdempotencyKey('key-1')).toBeNull();
+    });
+
+    it('rejects the update and keeps the previous status', async () => {
+      const file = path.join(directory, 'payments.json');
+      const repository = await FilePaymentRepository.open(file);
+      const payment = buildPayment();
+      await repository.insert(payment);
+      await breakDisk(file);
+
+      await expect(
+        repository.update(payment.id, (current) =>
+          applyTransition(current, 'processing', { reason: 'Processing started' }),
+        ),
+      ).rejects.toThrow();
+
+      expect((await repository.findById(payment.id))?.status).toBe('pending');
+    });
+
+    it('works again once the disk recovers, and the retry succeeds cleanly', async () => {
+      const file = path.join(directory, 'payments.json');
+      const repository = await FilePaymentRepository.open(file);
+      const payment = buildPayment({ idempotencyKey: 'key-1' });
+      await breakDisk(file);
+      await expect(repository.insert(payment)).rejects.toThrow();
+      await repairDisk(file);
+
+      await repository.insert(payment);
+
+      const reopened = await FilePaymentRepository.open(file);
+      expect(await reopened.findById(payment.id)).toEqual(payment);
+    });
   });
 
   it('refuses to start from a corrupt file instead of discarding data', async () => {

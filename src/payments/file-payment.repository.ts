@@ -4,24 +4,29 @@ import { InMemoryPaymentRepository, type PaymentRepository } from './payment.rep
 import type { Payment, PaymentStatus } from './payment.types';
 
 /**
- * JSON file persistence. Reads are served from memory; every write is flushed
- * to disk before the call resolves, so an acknowledged payment survives a
- * restart.
+ * JSON file persistence. Reads are served from memory; a write only becomes
+ * visible after it is safely on disk.
  *
- * Two details matter here:
- *  - writes are chained, so two saves can never interleave and corrupt the file;
- *  - each save writes a temp file and renames it over the real one, so a crash
- *    mid-write leaves the previous good file intact.
+ * How a write works:
+ *  1. Writes run one at a time through a queue, so they can never interleave.
+ *  2. The change is applied to a private copy of the data.
+ *  3. The copy is written to a temp file, which is then renamed over the real
+ *     file. A crash mid-write leaves the previous good file intact.
+ *  4. Only then does the copy replace the live data.
+ *
+ * If step 3 fails (disk full, permissions), the caller gets the error and the
+ * live data is untouched: memory and disk never disagree, and the API never
+ * acknowledges a payment that was not saved.
  *
  * It rewrites the whole file on each change, which is fine for a simulation
  * and exactly why a real service would use a database instead.
  */
 export class FilePaymentRepository implements PaymentRepository {
-  private writeChain: Promise<void> = Promise.resolve();
+  private writeQueue: Promise<unknown> = Promise.resolve();
 
   private constructor(
     private readonly filePath: string,
-    private readonly store: InMemoryPaymentRepository,
+    private committed: InMemoryPaymentRepository,
   ) {}
 
   static async open(filePath: string): Promise<FilePaymentRepository> {
@@ -30,46 +35,50 @@ export class FilePaymentRepository implements PaymentRepository {
     return new FilePaymentRepository(resolved, new InMemoryPaymentRepository(await load(resolved)));
   }
 
-  async insert(payment: Payment): Promise<Payment> {
-    const inserted = await this.store.insert(payment);
-    await this.persist();
-    return inserted;
+  insert(payment: Payment): Promise<Payment> {
+    return this.write((draft) => draft.insert(payment));
   }
 
   findById(id: string): Promise<Payment | null> {
-    return this.store.findById(id);
+    return this.committed.findById(id);
   }
 
   findByIdempotencyKey(key: string): Promise<Payment | null> {
-    return this.store.findByIdempotencyKey(key);
+    return this.committed.findByIdempotencyKey(key);
   }
 
   findByStatus(statuses: readonly PaymentStatus[]): Promise<Payment[]> {
-    return this.store.findByStatus(statuses);
+    return this.committed.findByStatus(statuses);
   }
 
-  async update(id: string, mutate: (current: Payment) => Payment): Promise<Payment | null> {
-    const updated = await this.store.update(id, mutate);
-    if (updated) {
-      await this.persist();
-    }
-    return updated;
+  update(id: string, mutate: (current: Payment) => Payment): Promise<Payment | null> {
+    return this.write((draft) => draft.update(id, mutate));
   }
 
-  /** Resolves once every write requested so far is on disk. */
-  flush(): Promise<void> {
-    return this.writeChain;
+  /** Resolves once every write requested so far has finished. */
+  async flush(): Promise<void> {
+    await this.writeQueue;
   }
 
-  private persist(): Promise<void> {
-    const write = this.writeChain.then(async () => {
-      const tempPath = `${this.filePath}.tmp`;
-      await writeFile(tempPath, JSON.stringify(this.store.snapshot(), null, 2), 'utf8');
-      await rename(tempPath, this.filePath);
+  private write<T>(change: (draft: InMemoryPaymentRepository) => Promise<T>): Promise<T> {
+    const result = this.writeQueue.then(async () => {
+      const draft = new InMemoryPaymentRepository(this.committed.snapshot());
+      const outcome = await change(draft); // throws (and commits nothing) if a rule is violated
+      if (outcome !== null) {
+        await this.saveToDisk(draft.snapshot());
+        this.committed = draft;
+      }
+      return outcome;
     });
-    // Keep the chain alive after a failed write; the caller still sees the rejection.
-    this.writeChain = write.catch(() => undefined);
-    return write;
+    // Keep the queue usable after a failed write; the caller still sees the rejection.
+    this.writeQueue = result.catch(() => undefined);
+    return result;
+  }
+
+  private async saveToDisk(payments: Payment[]): Promise<void> {
+    const tempPath = `${this.filePath}.tmp`;
+    await writeFile(tempPath, JSON.stringify(payments, null, 2), 'utf8');
+    await rename(tempPath, this.filePath);
   }
 }
 
