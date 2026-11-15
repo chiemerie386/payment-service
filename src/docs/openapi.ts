@@ -55,6 +55,7 @@ export const openApiDocument = {
     '/payments': {
       post: {
         tags: ['Payments'],
+        security: [{ bearerAuth: [] }],
         summary: 'Create a payment',
         description:
           'Stores the payment as `pending` and returns immediately. Processing happens in the background; ' +
@@ -113,6 +114,8 @@ export const openApiDocument = {
             'idempotency_key_reused',
             'This Idempotency-Key was already used with a different request body',
           ),
+          401: { $ref: '#/components/responses/Unauthorized' },
+          429: { $ref: '#/components/responses/RateLimited' },
           500: { $ref: '#/components/responses/InternalError' },
         },
       },
@@ -120,6 +123,7 @@ export const openApiDocument = {
     '/payments/{id}': {
       get: {
         tags: ['Payments'],
+        security: [{ bearerAuth: [] }],
         summary: 'Retrieve a payment',
         parameters: [paymentIdParameter],
         responses: {
@@ -136,11 +140,14 @@ export const openApiDocument = {
             { field: 'id', message: 'id must be a valid UUID' },
           ]),
           404: { $ref: '#/components/responses/PaymentNotFound' },
+          401: { $ref: '#/components/responses/Unauthorized' },
+          429: { $ref: '#/components/responses/RateLimited' },
           500: { $ref: '#/components/responses/InternalError' },
         },
       },
       patch: {
         tags: ['Payments'],
+        security: [{ bearerAuth: [] }],
         summary: 'Update the status of a payment',
         description:
           'Moves the payment to a new status if the lifecycle allows it. Sending the status the payment ' +
@@ -170,6 +177,8 @@ export const openApiDocument = {
             'A payment cannot move from "successful" to "failed"',
             { from: 'successful', to: 'failed', allowed: [] },
           ),
+          401: { $ref: '#/components/responses/Unauthorized' },
+          429: { $ref: '#/components/responses/RateLimited' },
           500: { $ref: '#/components/responses/InternalError' },
         },
       },
@@ -196,7 +205,26 @@ export const openApiDocument = {
     },
   },
   components: {
+    securitySchemes: {
+      bearerAuth: {
+        type: 'http',
+        scheme: 'bearer',
+        description:
+          'API key sent as `Authorization: Bearer <key>` (or in an `X-API-Key` header). ' +
+          'Enforced only when the service is started with `API_KEYS` set.',
+      },
+    },
     responses: {
+      Unauthorized: errorResponse(
+        'Missing or invalid API key (only when the service has API_KEYS configured).',
+        'unauthorized',
+        'A valid API key is required',
+      ),
+      RateLimited: errorResponse(
+        'Too many requests from this client. See the Retry-After header.',
+        'rate_limited',
+        'Too many requests, please slow down and retry later',
+      ),
       PaymentNotFound: errorResponse(
         'No payment has this id.',
         'payment_not_found',

@@ -11,6 +11,7 @@ describe('loadConfig', () => {
       autoProcess: true,
       processing: { maxAttempts: 3, maxConcurrency: 10 },
       recoverySweepIntervalMs: 30_000,
+      security: { apiKeys: [], rateLimit: { windowMs: 60_000, max: 120 } },
     });
   });
 
@@ -35,7 +36,14 @@ describe('loadConfig', () => {
     expect(loadConfig({ AUTO_PROCESS: 'true' }).autoProcess).toBe(true);
   });
 
+  it('parses a comma-separated list of API keys, ignoring blanks', () => {
+    const config = loadConfig({ API_KEYS: ' key-one-0123456789 , ,key-two-0123456789,' });
+
+    expect(config.security.apiKeys).toEqual(['key-one-0123456789', 'key-two-0123456789']);
+  });
+
   it.each([
+    [{ API_KEYS: 'short' }, /at least 16 characters/],
     [{ PROCESSING_MAX_CONCURRENCY: '0' }, /PROCESSING_MAX_CONCURRENCY/],
     [{ PORT: 'abc' }, /PORT/],
     [{ PERSISTENCE: 'redis' }, /PERSISTENCE/],

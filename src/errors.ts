@@ -27,6 +27,18 @@ export class ValidationError extends AppError {
   }
 }
 
+export class UnauthorizedError extends AppError {
+  constructor() {
+    super(401, 'unauthorized', 'A valid API key is required');
+  }
+}
+
+export class RateLimitedError extends AppError {
+  constructor() {
+    super(429, 'rate_limited', 'Too many requests, please slow down and retry later');
+  }
+}
+
 export class PaymentNotFoundError extends AppError {
   constructor(id: string) {
     super(404, 'payment_not_found', `Payment ${id} was not found`);

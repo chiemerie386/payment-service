@@ -1,4 +1,5 @@
 import { createApp } from '../src/app';
+import type { SecurityOptions } from '../src/middleware/security';
 import { createLogger } from '../src/logger';
 import type { ChargeRequest, ChargeResult, PaymentGateway } from '../src/payments/payment.gateway';
 import { PaymentProcessor, type ProcessorOptions } from '../src/payments/payment.processor';
@@ -54,7 +55,7 @@ export const FAST_PROCESSING: ProcessorOptions = {
 };
 
 /** Wires the real app, service, processor and in-memory store around a scripted gateway. */
-export function buildTestApp(options: { autoProcess?: boolean } = {}) {
+export function buildTestApp(options: { autoProcess?: boolean; security?: SecurityOptions } = {}) {
   const repository = new InMemoryPaymentRepository();
   const gateway = mockGateway();
   gateway.charge.mockResolvedValue(APPROVED);
@@ -62,6 +63,10 @@ export function buildTestApp(options: { autoProcess?: boolean } = {}) {
   const processor = new PaymentProcessor(repository, gateway, silentLogger, FAST_PROCESSING, sleep);
   const queue = options.autoProcess === false ? { enqueue: () => undefined } : processor;
   const paymentService = new PaymentService(repository, queue, silentLogger);
-  const app = createApp({ paymentService, logger: silentLogger });
+  const app = createApp({
+    paymentService,
+    logger: silentLogger,
+    ...(options.security && { security: options.security }),
+  });
   return { app, repository, gateway, processor, paymentService };
 }

@@ -337,6 +337,144 @@ describe.each(['patch', 'put'] as const)('%s /payments/:id', (method) => {
   });
 });
 
+describe('security', () => {
+  const API_KEY = 'test-key-0123456789abcdef';
+  const OTHER_KEY = 'other-key-0123456789abcdef';
+  const open = { windowMs: 60_000, max: 0 };
+
+  describe('API key authentication', () => {
+    const secured = () => buildTestApp({ autoProcess: false, security: { apiKeys: [API_KEY, OTHER_KEY], rateLimit: open } });
+
+    it('rejects requests without a key with 401', async () => {
+      const { app, repository } = secured();
+
+      const response = await request(app).post('/payments').send(validBody);
+
+      expect(response.status).toBe(401);
+      expect(response.body.error.code).toBe('unauthorized');
+      expect(response.headers['www-authenticate']).toBe('Bearer');
+      expect(repository.snapshot()).toHaveLength(0);
+    });
+
+    it.each([
+      ['a wrong key', 'Bearer wrong-key-0123456789abcdef'],
+      ['a key that is a prefix of a real one', `Bearer ${API_KEY.slice(0, -1)}`],
+      ['an empty bearer token', 'Bearer '],
+      ['a different auth scheme', `Basic ${API_KEY}`],
+    ])('rejects %s with 401', async (_case, authorization) => {
+      const { app } = secured();
+
+      const response = await request(app).get(`/payments/${UNKNOWN_ID}`).set('Authorization', authorization);
+
+      expect(response.status).toBe(401);
+    });
+
+    it('accepts any configured key as a bearer token', async () => {
+      const { app } = secured();
+
+      const first = await request(app).post('/payments').set('Authorization', `Bearer ${API_KEY}`).send(validBody);
+      const second = await request(app).post('/payments').set('Authorization', `Bearer ${OTHER_KEY}`).send(validBody);
+
+      expect(first.status).toBe(201);
+      expect(second.status).toBe(201);
+    });
+
+    it('accepts the key in the X-API-Key header', async () => {
+      const { app } = secured();
+
+      const response = await request(app).post('/payments').set('X-API-Key', API_KEY).send(validBody);
+
+      expect(response.status).toBe(201);
+    });
+
+    it('protects every payment route', async () => {
+      const { app } = secured();
+
+      const responses = await Promise.all([
+        request(app).post('/payments').send(validBody),
+        request(app).get(`/payments/${UNKNOWN_ID}`),
+        request(app).patch(`/payments/${UNKNOWN_ID}`).send({ status: 'failed' }),
+        request(app).put(`/payments/${UNKNOWN_ID}`).send({ status: 'failed' }),
+      ]);
+
+      expect(responses.map((response) => response.status)).toEqual([401, 401, 401, 401]);
+    });
+
+    it('answers 401 before looking at the body, so nothing about the request is revealed', async () => {
+      const { app } = secured();
+
+      const response = await request(app)
+        .post('/payments')
+        .set('Content-Type', 'application/json')
+        .send('{"broken":');
+
+      expect(response.status).toBe(401);
+    });
+
+    it('leaves the health check and docs open', async () => {
+      const { app } = secured();
+
+      expect((await request(app).get('/health')).status).toBe(200);
+      expect((await request(app).get('/openapi.json')).status).toBe(200);
+    });
+  });
+
+  describe('rate limiting', () => {
+    it('answers 429 in the standard error shape once the limit is exceeded', async () => {
+      const { app } = buildTestApp({ security: { apiKeys: [], rateLimit: { windowMs: 60_000, max: 2 } } });
+
+      const first = await request(app).get(`/payments/${UNKNOWN_ID}`);
+      const second = await request(app).get(`/payments/${UNKNOWN_ID}`);
+      const third = await request(app).get(`/payments/${UNKNOWN_ID}`);
+
+      expect([first.status, second.status]).toEqual([404, 404]);
+      expect(third.status).toBe(429);
+      expect(third.body.error.code).toBe('rate_limited');
+      expect(Number(third.headers['retry-after'])).toBeGreaterThan(0);
+    });
+
+    it('also throttles failed authentication attempts', async () => {
+      const { app } = buildTestApp({ security: { apiKeys: [API_KEY], rateLimit: { windowMs: 60_000, max: 2 } } });
+      const guess = () => request(app).get(`/payments/${UNKNOWN_ID}`).set('Authorization', 'Bearer guess-0123456789abcdef');
+
+      const statuses = [(await guess()).status, (await guess()).status, (await guess()).status];
+
+      expect(statuses).toEqual([401, 401, 429]);
+    });
+
+    it('does not throttle the health check', async () => {
+      const { app } = buildTestApp({ security: { apiKeys: [], rateLimit: { windowMs: 60_000, max: 1 } } });
+
+      const statuses = [];
+      for (let i = 0; i < 3; i += 1) {
+        statuses.push((await request(app).get('/health')).status);
+      }
+
+      expect(statuses).toEqual([200, 200, 200]);
+    });
+  });
+
+  it('marks payment responses as not cacheable', async () => {
+    const { app } = buildTestApp({ autoProcess: false });
+
+    const created = await request(app).post('/payments').send(validBody);
+    const fetched = await request(app).get(`/payments/${created.body.id}`);
+
+    expect(created.headers['cache-control']).toBe('no-store');
+    expect(fetched.headers['cache-control']).toBe('no-store');
+  });
+
+  it('sets defensive HTTP headers', async () => {
+    const { app } = buildTestApp();
+
+    const response = await request(app).get(`/payments/${UNKNOWN_ID}`);
+
+    expect(response.headers['x-content-type-options']).toBe('nosniff');
+    expect(response.headers).toHaveProperty('content-security-policy');
+    expect(response.headers).toHaveProperty('strict-transport-security');
+  });
+});
+
 describe('cross-cutting behaviour', () => {
   it('returns a generic 500 without leaking internals when something unexpected breaks', async () => {
     const { app, paymentService } = buildTestApp();

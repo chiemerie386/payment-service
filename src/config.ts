@@ -34,6 +34,22 @@ const envSchema = z
     PROCESSING_MAX_CONCURRENCY: z.coerce.number().int().min(1).default(10),
     RECOVERY_SWEEP_INTERVAL_MS: z.coerce.number().int().min(0).default(30_000),
 
+    // Comma-separated. Empty or unset disables authentication.
+    API_KEYS: z
+      .string()
+      .default('')
+      .transform((value) =>
+        value
+          .split(',')
+          .map((key) => key.trim())
+          .filter((key) => key.length > 0),
+      )
+      .refine((keys) => keys.every((key) => key.length >= 16), {
+        message: 'every API key must be at least 16 characters long',
+      }),
+    RATE_LIMIT_WINDOW_MS: z.coerce.number().int().min(1000).default(60_000),
+    RATE_LIMIT_MAX: z.coerce.number().int().min(0).default(120),
+
     SHUTDOWN_TIMEOUT_MS: z.coerce.number().int().min(0).default(10_000),
   })
   .refine((env) => env.GATEWAY_MIN_LATENCY_MS <= env.GATEWAY_MAX_LATENCY_MS, {
@@ -65,6 +81,10 @@ export interface Config {
     maxConcurrency: number;
   };
   recoverySweepIntervalMs: number;
+  security: {
+    apiKeys: string[];
+    rateLimit: { windowMs: number; max: number };
+  };
   shutdownTimeoutMs: number;
 }
 
@@ -102,6 +122,10 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): Config {
       maxConcurrency: env.PROCESSING_MAX_CONCURRENCY,
     },
     recoverySweepIntervalMs: env.RECOVERY_SWEEP_INTERVAL_MS,
+    security: {
+      apiKeys: env.API_KEYS,
+      rateLimit: { windowMs: env.RATE_LIMIT_WINDOW_MS, max: env.RATE_LIMIT_MAX },
+    },
     shutdownTimeoutMs: env.SHUTDOWN_TIMEOUT_MS,
   };
 }

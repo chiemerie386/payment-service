@@ -44,7 +44,11 @@ async function main(): Promise<void> {
     processor.startRecoverySweep(config.recoverySweepIntervalMs);
   }
 
-  const app = createApp({ paymentService, logger });
+  if (config.security.apiKeys.length === 0) {
+    logger.warn('API_KEYS is not set: authentication is disabled. Do not expose this service publicly.');
+  }
+
+  const app = createApp({ paymentService, logger, security: config.security });
   const server = app.listen(config.port, (error?: Error) => {
     if (error) {
       // For example EADDRINUSE: nothing useful can happen without a port.
