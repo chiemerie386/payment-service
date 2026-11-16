@@ -17,6 +17,8 @@ Built with Node.js, TypeScript, Express 5, Zod, Pino and Jest.
 - [Design decisions](#design-decisions)
 - [What I would add for production](#what-i-would-add-for-production)
 
+The AI transcript of the work is in [AI_TRANSCRIPT.md](AI_TRANSCRIPT.md).
+
 ## Quick start
 
 Requires Node.js 22 or newer.
